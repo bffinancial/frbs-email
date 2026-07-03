@@ -160,7 +160,7 @@ export default function LoginPage() {
                   onChange={(e) =>
                     setEmail(e.target.value)
                   }
-                  className="w-full outline-none"
+                  className="w-full bg-white text-black placeholder:text-gray-400 outline-none"
                 />
 
               </div>
@@ -176,7 +176,7 @@ export default function LoginPage() {
                   onChange={(e) =>
                     setPassword(e.target.value)
                   }
-                  className="w-full outline-none"
+                  className="w-full bg-white text-black placeholder:text-gray-400 outline-none"
                 />
 
               </div>
