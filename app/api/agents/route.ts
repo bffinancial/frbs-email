@@ -84,7 +84,7 @@ export async function POST(req: Request) {
         type: "recovery",
         email: forwardingEmail,
         options: {
-          redirectTo: `${SITE_URL}/login`,
+          redirectTo: `${SITE_URL}/create-password`,
         },
       });
 
