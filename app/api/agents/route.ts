@@ -50,24 +50,30 @@ export async function POST(req: Request) {
     const { data: existingAgent } = await supabaseAdmin
       .from("agents")
       .select("id")
-      .or(`forwarding_email.eq.${forwardingEmail},company_email.eq.${companyEmail}`)
+      .or(
+        `forwarding_email.eq.${forwardingEmail},company_email.eq.${companyEmail},auth_email.eq.${companyEmail}`
+      )
       .maybeSingle();
 
     if (existingAgent) {
       return NextResponse.json(
-        { error: "An agent already exists with this forwarding email or FRBS email." },
+        {
+          error:
+            "An agent already exists with this forwarding email or FORWARD Mail email.",
+        },
         { status: 409 }
       );
     }
 
     const { data: createdUser, error: createUserError } =
       await supabaseAdmin.auth.admin.createUser({
-        email: forwardingEmail,
+        email: companyEmail,
         password: createTempPassword(),
         email_confirm: true,
         user_metadata: {
           full_name: fullName,
           frbs_email: companyEmail,
+          forwarding_email: forwardingEmail,
           role,
         },
       });
@@ -82,7 +88,7 @@ export async function POST(req: Request) {
     const { data: linkData, error: linkError } =
       await supabaseAdmin.auth.admin.generateLink({
         type: "recovery",
-        email: forwardingEmail,
+        email: companyEmail,
         options: {
           redirectTo: `${SITE_URL}/create-password`,
         },
@@ -105,13 +111,16 @@ export async function POST(req: Request) {
         first_name: firstName,
         last_name: lastName,
         full_name: fullName,
-        forwarding_email: forwardingEmail,
+
         company_email: companyEmail,
-        auth_email: forwardingEmail,
+        auth_email: companyEmail,
+        forwarding_email: forwardingEmail,
+
         user_id: createdUser.user.id,
         phone,
         role,
         signature_title: role,
+
         status: "active",
         is_active: true,
         invite_status: "sent",
@@ -158,7 +167,7 @@ export async function POST(req: Request) {
     return NextResponse.json(
       {
         agent,
-        message: `Agent created. Welcome email sent to ${forwardingEmail}.`,
+        message: `Agent created. Login is ${companyEmail}. Welcome email sent to ${forwardingEmail}.`,
       },
       { status: 201 }
     );
