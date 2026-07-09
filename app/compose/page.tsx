@@ -2,8 +2,21 @@
 
 import { useEffect, useState } from "react";
 import Header from "@/components/Header";
-import { Send, MailPlus, Loader2, CheckCircle2, AlertCircle } from "lucide-react";
+import EmailEditor from "@/components/mail/EmailEditor";
 import { supabaseClient } from "@/lib/supabaseClient";
+import {
+  AlertCircle,
+  CheckCircle2,
+  Clock,
+  FileText,
+  Loader2,
+  MailPlus,
+  Paperclip,
+  Save,
+  Send,
+  Trash2,
+  UserCircle,
+} from "lucide-react";
 
 type Agent = {
   id: string;
@@ -15,8 +28,11 @@ type Agent = {
 export default function ComposePage() {
   const [agent, setAgent] = useState<Agent | null>(null);
   const [toEmail, setToEmail] = useState("");
+  const [ccEmail, setCcEmail] = useState("");
+  const [bccEmail, setBccEmail] = useState("");
   const [subject, setSubject] = useState("");
-  const [body, setBody] = useState("");
+  const [bodyHtml, setBodyHtml] = useState("");
+  const [bodyText, setBodyText] = useState("");
   const [sending, setSending] = useState(false);
   const [loadingAgent, setLoadingAgent] = useState(true);
   const [status, setStatus] = useState("");
@@ -60,7 +76,7 @@ export default function ComposePage() {
   async function sendEmail() {
     setSuccess(false);
 
-    if (!agent || !toEmail.trim() || !subject.trim() || !body.trim()) {
+    if (!agent || !toEmail.trim() || !subject.trim() || !bodyText.trim()) {
       setStatus("Please complete To, Subject, and Message before sending.");
       return;
     }
@@ -77,8 +93,11 @@ export default function ComposePage() {
         agentId: agent.id,
         fromEmail: agent.company_email,
         toEmail: toEmail.trim(),
+        ccEmail: ccEmail.trim(),
+        bccEmail: bccEmail.trim(),
         subject: subject.trim(),
-        body: body.trim(),
+        body: bodyText.trim(),
+        html: bodyHtml,
       }),
     });
 
@@ -93,8 +112,11 @@ export default function ComposePage() {
     setSuccess(true);
     setStatus("Email sent successfully and saved to Sent.");
     setToEmail("");
+    setCcEmail("");
+    setBccEmail("");
     setSubject("");
-    setBody("");
+    setBodyHtml("");
+    setBodyText("");
     setSending(false);
   }
 
@@ -102,10 +124,10 @@ export default function ComposePage() {
     <main className="min-h-screen bg-[#f6f3ef] text-[#4b0008]">
       <Header />
 
-      <div className="mx-auto max-w-[1100px] px-4 py-6">
+      <div className="mx-auto max-w-[1400px] px-4 py-6">
         <section className="overflow-hidden rounded-3xl border border-[#4b0008]/10 bg-white shadow-xl">
           <div className="border-b border-[#4b0008]/10 bg-[#fbfaf8] px-6 py-5">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
               <div>
                 <p className="text-xs font-black uppercase tracking-[0.25em] text-[#7a1118]">
                   FORWARD Mail
@@ -117,31 +139,46 @@ export default function ComposePage() {
                 </h1>
 
                 <p className="mt-2 text-sm text-[#6f2b31]">
-                  Create a new message from your assigned FORWARD Mail identity.
+                  Create rich, professional emails with formatting and future attachment support.
                 </p>
               </div>
 
-              <button
-                onClick={sendEmail}
-                disabled={sending || loadingAgent || !agent}
-                className="flex w-fit items-center gap-2 rounded-2xl bg-[#4b0008] px-6 py-3 font-black text-white shadow-md transition hover:bg-[#6b1018] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {sending ? (
-                  <Loader2 className="h-5 w-5 animate-spin" />
-                ) : (
-                  <Send className="h-5 w-5" />
-                )}
-                {sending ? "Sending..." : "Send"}
-              </button>
+              <div className="flex flex-wrap gap-3">
+                <button
+                  type="button"
+                  onClick={() => setStatus("Draft saving is coming next.")}
+                  className="flex items-center gap-2 rounded-2xl border border-[#4b0008]/15 bg-white px-5 py-3 font-black transition hover:bg-[#f5eee7]"
+                >
+                  <Save className="h-5 w-5" />
+                  Save Draft
+                </button>
+
+                <button
+                  type="button"
+                  onClick={sendEmail}
+                  disabled={sending || loadingAgent || !agent}
+                  className="flex items-center gap-2 rounded-2xl bg-[#4b0008] px-6 py-3 font-black text-white shadow-md transition hover:bg-[#6b1018] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {sending ? (
+                    <Loader2 className="h-5 w-5 animate-spin" />
+                  ) : (
+                    <Send className="h-5 w-5" />
+                  )}
+                  {sending ? "Sending..." : "Send Email"}
+                </button>
+              </div>
             </div>
           </div>
 
-          <div className="grid gap-0 lg:grid-cols-[280px_1fr]">
-            <aside className="border-b border-[#4b0008]/10 bg-[#fbfaf8] p-6 lg:border-b-0 lg:border-r">
+          <div className="grid gap-0 xl:grid-cols-[320px_1fr]">
+            <aside className="border-b border-[#4b0008]/10 bg-[#fbfaf8] p-6 xl:border-b-0 xl:border-r">
               <div className="rounded-2xl border border-[#4b0008]/10 bg-white p-5 shadow-sm">
-                <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7a1118]">
-                  Sender
-                </p>
+                <div className="flex items-center gap-3">
+                  <UserCircle className="h-8 w-8" />
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7a1118]">
+                    Sender Identity
+                  </p>
+                </div>
 
                 {loadingAgent ? (
                   <div className="mt-4 flex items-center gap-2 text-sm font-semibold text-[#6f2b31]">
@@ -149,18 +186,18 @@ export default function ComposePage() {
                     Loading identity...
                   </div>
                 ) : agent ? (
-                  <div className="mt-4">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[#4b0008] text-lg font-black text-white">
+                  <div className="mt-5">
+                    <div className="flex h-14 w-14 items-center justify-center rounded-full bg-[#4b0008] text-xl font-black text-white">
                       {(agent.full_name || agent.company_email || "?")
                         .charAt(0)
                         .toUpperCase()}
                     </div>
 
-                    <p className="mt-4 font-black">{agent.full_name}</p>
+                    <p className="mt-4 text-lg font-black">{agent.full_name}</p>
                     <p className="mt-1 break-words text-sm font-semibold text-[#6f2b31]">
                       {agent.company_email}
                     </p>
-                    <p className="mt-2 text-xs text-[#6f2b31]">
+                    <p className="mt-2 text-xs font-bold text-[#6f2b31]">
                       Role: {agent.role}
                     </p>
                   </div>
@@ -169,6 +206,55 @@ export default function ComposePage() {
                     No sender identity found.
                   </p>
                 )}
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[#4b0008]/10 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <Clock className="h-6 w-6" />
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7a1118]">
+                    Draft Status
+                  </p>
+                </div>
+
+                <p className="mt-4 text-sm font-bold text-[#6f2b31]">
+                  Auto-save drafts are coming next.
+                </p>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[#4b0008]/10 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <Paperclip className="h-6 w-6" />
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7a1118]">
+                    Attachments
+                  </p>
+                </div>
+
+                <p className="mt-4 text-sm font-bold text-[#6f2b31]">
+                  No files attached yet.
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => setStatus("File attachments are coming next.")}
+                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl border border-[#4b0008]/15 bg-[#fbfaf8] px-4 py-3 font-black transition hover:bg-[#f5eee7]"
+                >
+                  <Paperclip className="h-4 w-4" />
+                  Attach File
+                </button>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-[#4b0008]/10 bg-white p-5 shadow-sm">
+                <div className="flex items-center gap-3">
+                  <FileText className="h-6 w-6" />
+                  <p className="text-xs font-black uppercase tracking-[0.2em] text-[#7a1118]">
+                    Signature
+                  </p>
+                </div>
+
+                <p className="mt-4 whitespace-pre-line text-sm font-semibold text-[#6f2b31]">
+                  Regards,{"\n"}
+                  {agent?.full_name || "FORWARD Mail Agent"}
+                </p>
               </div>
 
               {status && (
@@ -205,17 +291,45 @@ export default function ComposePage() {
                   </div>
                 </div>
 
-                <div className="rounded-2xl border border-[#4b0008]/10 bg-white px-4 py-3 transition-within focus-within:border-[#7a1118]">
-                  <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-[#7a1118]">
-                    To
-                  </label>
+                <div className="grid gap-4 lg:grid-cols-3">
+                  <div className="rounded-2xl border border-[#4b0008]/10 bg-white px-4 py-3 focus-within:border-[#7a1118]">
+                    <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-[#7a1118]">
+                      To
+                    </label>
 
-                  <input
-                    value={toEmail}
-                    onChange={(e) => setToEmail(e.target.value)}
-                    placeholder="client@email.com"
-                    className="w-full bg-transparent text-base font-semibold outline-none placeholder:text-[#6f2b31]/50"
-                  />
+                    <input
+                      value={toEmail}
+                      onChange={(e) => setToEmail(e.target.value)}
+                      placeholder="client@email.com"
+                      className="w-full bg-transparent text-base font-semibold outline-none placeholder:text-[#6f2b31]/50"
+                    />
+                  </div>
+
+                  <div className="rounded-2xl border border-[#4b0008]/10 bg-white px-4 py-3 focus-within:border-[#7a1118]">
+                    <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-[#7a1118]">
+                      CC
+                    </label>
+
+                    <input
+                      value={ccEmail}
+                      onChange={(e) => setCcEmail(e.target.value)}
+                      placeholder="Optional"
+                      className="w-full bg-transparent text-base font-semibold outline-none placeholder:text-[#6f2b31]/50"
+                    />
+                  </div>
+
+                  <div className="rounded-2xl border border-[#4b0008]/10 bg-white px-4 py-3 focus-within:border-[#7a1118]">
+                    <label className="mb-1 block text-xs font-black uppercase tracking-[0.18em] text-[#7a1118]">
+                      BCC
+                    </label>
+
+                    <input
+                      value={bccEmail}
+                      onChange={(e) => setBccEmail(e.target.value)}
+                      placeholder="Optional"
+                      className="w-full bg-transparent text-base font-semibold outline-none placeholder:text-[#6f2b31]/50"
+                    />
+                  </div>
                 </div>
 
                 <div className="rounded-2xl border border-[#4b0008]/10 bg-white px-4 py-3 focus-within:border-[#7a1118]">
@@ -231,39 +345,59 @@ export default function ComposePage() {
                   />
                 </div>
 
-                <div className="rounded-2xl border border-[#4b0008]/10 bg-white focus-within:border-[#7a1118]">
-                  <div className="border-b border-[#4b0008]/10 px-4 py-3">
-                    <p className="text-xs font-black uppercase tracking-[0.18em] text-[#7a1118]">
-                      Message
-                    </p>
-                  </div>
-
-                  <textarea
-                    rows={16}
-                    value={body}
-                    onChange={(e) => setBody(e.target.value)}
-                    placeholder="Write your email..."
-                    className="min-h-[420px] w-full resize-y bg-transparent px-4 py-4 text-base leading-7 outline-none placeholder:text-[#6f2b31]/50"
-                  />
-                </div>
+                <EmailEditor
+                  value={bodyHtml}
+                  placeholder="Write your email..."
+                  minHeight="420px"
+                  onAttachClick={() => setStatus("File attachments are coming next.")}
+                  onChange={(html, text) => {
+                    setBodyHtml(html);
+                    setBodyText(text);
+                  }}
+                />
 
                 <div className="flex flex-col-reverse gap-3 border-t border-[#4b0008]/10 pt-5 md:flex-row md:items-center md:justify-between">
-                  <p className="text-sm font-semibold text-[#6f2b31]">
-                    Sent messages will be saved automatically in Sent.
-                  </p>
-
                   <button
-                    onClick={sendEmail}
-                    disabled={sending || loadingAgent || !agent}
-                    className="flex items-center justify-center gap-2 rounded-2xl bg-[#4b0008] px-7 py-3 font-black text-white shadow-md transition hover:bg-[#6b1018] disabled:cursor-not-allowed disabled:opacity-50"
+                    type="button"
+                    onClick={() => {
+                      setToEmail("");
+                      setCcEmail("");
+                      setBccEmail("");
+                      setSubject("");
+                      setBodyHtml("");
+                      setBodyText("");
+                      setStatus("Compose cleared.");
+                      setSuccess(false);
+                    }}
+                    className="flex items-center justify-center gap-2 rounded-2xl border border-red-200 px-5 py-3 font-black text-red-700 transition hover:bg-red-50"
                   >
-                    {sending ? (
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                    ) : (
-                      <Send className="h-5 w-5" />
-                    )}
-                    {sending ? "Sending..." : "Send Email"}
+                    <Trash2 className="h-5 w-5" />
+                    Clear
                   </button>
+
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => setStatus("Draft saving is coming next.")}
+                      className="flex items-center justify-center gap-2 rounded-2xl border border-[#4b0008]/15 bg-[#fbfaf8] px-6 py-3 font-black transition hover:bg-[#f5eee7]"
+                    >
+                      <Save className="h-5 w-5" />
+                      Save Draft
+                    </button>
+
+                    <button
+                      onClick={sendEmail}
+                      disabled={sending || loadingAgent || !agent}
+                      className="flex items-center justify-center gap-2 rounded-2xl bg-[#4b0008] px-7 py-3 font-black text-white shadow-md transition hover:bg-[#6b1018] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {sending ? (
+                        <Loader2 className="h-5 w-5 animate-spin" />
+                      ) : (
+                        <Send className="h-5 w-5" />
+                      )}
+                      {sending ? "Sending..." : "Send Email"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </section>
