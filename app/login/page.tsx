@@ -68,7 +68,7 @@ export default function LoginPage() {
         <div className="flex flex-col justify-center bg-[#4b0008] px-16 py-12 text-white">
 
           <Image
-            src="/forward-logo.png"
+            src="/frbs-logo.png"
             alt="FORWARD Retirement & Benefit Services"
             width={380}
             height={120}

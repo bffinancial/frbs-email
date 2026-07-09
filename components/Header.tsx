@@ -77,7 +77,7 @@ export default function Header() {
         {/* Logo */}
         <Link href="/dashboard" className="shrink-0">
           <Image
-            src="/forward-logo.png"
+            src="/frbs-logo.png"
             alt="FORWARD"
             width={230}
             height={60}
