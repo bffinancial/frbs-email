@@ -4,13 +4,24 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export async function POST(req: Request) {
   try {
     const { agentId, fromEmail, toEmail, subject, body } = await req.json();
 
-    if (!agentId || !fromEmail || !toEmail || !subject || !body) {
+    const cleanToEmail = String(toEmail || "").trim().toLowerCase();
+    const cleanSubject = String(subject || "").trim();
+    const cleanBody = String(body || "").trim();
+
+    if (!agentId || !fromEmail || !cleanToEmail || !cleanSubject || !cleanBody) {
       return NextResponse.json(
-        { error: "Missing required fields." },
+        { error: "Please complete all required fields." },
         { status: 400 }
       );
     }
@@ -18,9 +29,7 @@ export async function POST(req: Request) {
     const { data: agentProfile, error: agentProfileError } =
       await supabaseAdmin
         .from("agents")
-        .select(
-          "first_name, last_name, full_name, company_email, primary_sender_email"
-        )
+        .select("id, first_name, last_name, full_name, company_email")
         .eq("id", agentId)
         .single();
 
@@ -31,10 +40,7 @@ export async function POST(req: Request) {
       );
     }
 
-    const senderEmail =
-      agentProfile.primary_sender_email ||
-      agentProfile.company_email ||
-      fromEmail;
+    const senderEmail = agentProfile.company_email || fromEmail;
 
     const senderName =
       agentProfile.full_name?.trim() ||
@@ -50,9 +56,9 @@ export async function POST(req: Request) {
       .from("email_threads")
       .insert({
         agent_id: agentId,
-        subject,
+        subject: cleanSubject,
       })
-      .select()
+      .select("id, subject, created_at, updated_at")
       .single();
 
     if (threadError || !thread) {
@@ -62,70 +68,76 @@ export async function POST(req: Request) {
       );
     }
 
-    const { data: email, error: emailError } = await supabaseAdmin
-      .from("emails")
-      .insert({
-        thread_id: thread.id,
-        agent_id: agentId,
-        from_email: senderEmail,
-        to_email: toEmail,
-        subject,
-        body,
-        direction: "outbound",
-        status: "queued",
-        opened: false,
-        starred: false,
-        deleted: false,
-      })
-      .select()
-      .single();
-
-    if (emailError || !email) {
-      return NextResponse.json(
-        { error: emailError?.message || "Unable to save email." },
-        { status: 500 }
-      );
-    }
-
     const resendResult = await resend.emails.send({
       from: formattedFrom,
-      to: [toEmail],
-      subject,
+      to: [cleanToEmail],
+      subject: cleanSubject,
+      text: cleanBody,
       html: `
-        <div style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;">
-          ${body.replace(/\n/g, "<br />")}
+        <div style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;white-space:pre-wrap;">
+          ${escapeHtml(cleanBody)}
         </div>
       `,
     });
 
     if ("error" in resendResult && resendResult.error) {
-      await supabaseAdmin
-        .from("emails")
-        .update({ status: "failed" })
-        .eq("id", email.id);
-
       return NextResponse.json(
         { error: resendResult.error.message },
         { status: 500 }
       );
     }
 
-    await supabaseAdmin
+    const providerMessageId =
+      "data" in resendResult ? resendResult.data?.id || null : null;
+
+    const { data: email, error: emailError } = await supabaseAdmin
       .from("emails")
-      .update({ status: "sent" })
-      .eq("id", email.id);
+      .insert({
+        thread_id: thread.id,
+        agent_id: agentId,
+        from_email: senderEmail,
+        to_email: cleanToEmail,
+        subject: cleanSubject,
+        body: cleanBody,
+        direction: "outbound",
+        status: "sent",
+        opened: true,
+        starred: false,
+        deleted: false,
+        provider_message_id: providerMessageId,
+      })
+      .select("*")
+      .single();
+
+    if (emailError || !email) {
+      return NextResponse.json(
+        {
+          error:
+            emailError?.message ||
+            "Email was sent, but could not be saved to Sent.",
+        },
+        { status: 500 }
+      );
+    }
+
+    await supabaseAdmin
+      .from("email_threads")
+      .update({
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", thread.id);
 
     return NextResponse.json({
       success: true,
       thread,
       email,
-      resend: resendResult,
+      providerMessageId,
     });
   } catch (error) {
     console.error("SEND EMAIL ERROR:", error);
 
     return NextResponse.json(
-      { error: "Unexpected server error." },
+      { error: "Unexpected server error sending email." },
       { status: 500 }
     );
   }
