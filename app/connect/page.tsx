@@ -20,6 +20,17 @@ type ChatMessage = {
   created_at: string;
 };
 
+type Agent = {
+  id: string;
+  user_id: string | null;
+  full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  company_email: string | null;
+  auth_email: string | null;
+  role: string | null;
+};
+
 export default function ConnectPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [checkingAccess, setCheckingAccess] = useState(true);
@@ -28,6 +39,7 @@ export default function ConnectPage() {
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -43,6 +55,7 @@ export default function ConnectPage() {
   useEffect(() => {
     if (!hasAccess) return;
     loadChannels();
+    loadAgents();
   }, [hasAccess]);
 
   useEffect(() => {
@@ -61,10 +74,7 @@ export default function ConnectPage() {
           filter: `channel_id=eq.${activeChannelId}`,
         },
         (payload) => {
-          setMessages((current) => [
-            ...current,
-            payload.new as ChatMessage,
-          ]);
+          setMessages((current) => [...current, payload.new as ChatMessage]);
         }
       )
       .subscribe();
@@ -89,25 +99,17 @@ export default function ConnectPage() {
 
     setUserId(user.id);
 
-    const { data: agentByUserId } = await supabaseClient
+    const { data } = await supabaseClient
       .from("agents")
       .select("id")
-      .eq("user_id", user.id)
+      .or(
+        `user_id.eq.${user.id},auth_email.eq.${user.email},company_email.eq.${user.email}`
+      )
+      .eq("is_active", true)
+      .eq("suspended", false)
       .maybeSingle();
 
-    if (agentByUserId) {
-      setHasAccess(true);
-      setCheckingAccess(false);
-      return;
-    }
-
-    const { data: agentByEmail } = await supabaseClient
-      .from("agents")
-      .select("id")
-      .eq("email", user.email)
-      .maybeSingle();
-
-    setHasAccess(!!agentByEmail);
+    setHasAccess(!!data);
     setCheckingAccess(false);
   }
 
@@ -127,6 +129,24 @@ export default function ConnectPage() {
     if (!activeChannelId && data && data.length > 0) {
       setActiveChannelId(data[0].id);
     }
+  }
+
+  async function loadAgents() {
+    const { data, error } = await supabaseClient
+      .from("agents")
+      .select(
+        "id,user_id,full_name,first_name,last_name,company_email,auth_email,role"
+      )
+      .eq("is_active", true)
+      .eq("suspended", false)
+      .order("full_name", { ascending: true });
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
+    setAgents(data || []);
   }
 
   async function loadMessages(channelId: string) {
@@ -168,6 +188,33 @@ export default function ConnectPage() {
 
     setNewMessage("");
     setSending(false);
+  }
+
+  function getAgentByUserId(senderId: string) {
+    return agents.find((agent) => agent.user_id === senderId);
+  }
+
+  function getAgentName(senderId: string) {
+    const agent = getAgentByUserId(senderId);
+
+    if (!agent) return "FRBS Agent";
+
+    if (agent.full_name) return agent.full_name;
+
+    const name = `${agent.first_name || ""} ${agent.last_name || ""}`.trim();
+
+    return name || agent.company_email || agent.auth_email || "FRBS Agent";
+  }
+
+  function getInitials(senderId: string) {
+    const name = getAgentName(senderId);
+
+    return name
+      .split(" ")
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase();
   }
 
   if (checkingAccess) {
@@ -237,7 +284,7 @@ export default function ConnectPage() {
             </p>
           </div>
 
-          <div className="flex-1 space-y-4 overflow-y-auto p-6">
+          <div className="flex-1 space-y-5 overflow-y-auto p-6">
             {messages.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-[#4b0008]/20 p-8 text-center text-[#6f2b31]">
                 No messages yet. Start the conversation.
@@ -247,23 +294,33 @@ export default function ConnectPage() {
                 const mine = message.sender_id === userId;
 
                 return (
-                  <div
-                    key={message.id}
-                    className={`flex ${mine ? "justify-end" : "justify-start"}`}
-                  >
-                    <div
-                      className={`max-w-[70%] rounded-2xl px-5 py-3 ${
-                        mine
-                          ? "bg-[#4b0008] text-white"
-                          : "bg-[#f6eee7] text-[#4b0008]"
-                      }`}
-                    >
-                      <p className="whitespace-pre-wrap text-sm font-semibold">
-                        {message.message}
-                      </p>
-                      <p className="mt-2 text-[11px] opacity-70">
-                        {new Date(message.created_at).toLocaleString()}
-                      </p>
+                  <div key={message.id} className="flex gap-3">
+                    <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[#4b0008] text-sm font-black text-white">
+                      {getInitials(message.sender_id)}
+                    </div>
+
+                    <div className="flex-1">
+                      <div className="mb-1 flex items-center gap-2">
+                        <p className="font-black text-[#4b0008]">
+                          {getAgentName(message.sender_id)}
+                        </p>
+
+                        {mine && (
+                          <span className="rounded-full bg-[#f6eee7] px-2 py-0.5 text-[11px] font-bold text-[#7a1118]">
+                            You
+                          </span>
+                        )}
+
+                        <p className="text-xs text-[#6f2b31]">
+                          {new Date(message.created_at).toLocaleString()}
+                        </p>
+                      </div>
+
+                      <div className="rounded-2xl bg-[#f6eee7] px-5 py-3 text-[#4b0008]">
+                        <p className="whitespace-pre-wrap text-sm font-semibold">
+                          {message.message}
+                        </p>
+                      </div>
                     </div>
                   </div>
                 );
@@ -286,7 +343,7 @@ export default function ConnectPage() {
                 placeholder={
                   activeChannel?.is_locked
                     ? "This channel is locked."
-                    : "Message FRBS Connect..."
+                    : `Message #${activeChannel?.name || "channel"}`
                 }
                 className="min-h-[52px] flex-1 resize-none rounded-2xl border border-[#4b0008]/15 px-4 py-3 outline-none focus:border-[#4b0008]"
               />
@@ -297,7 +354,7 @@ export default function ConnectPage() {
                 className="flex items-center gap-2 rounded-2xl bg-[#4b0008] px-6 py-3 font-black text-white disabled:opacity-50"
               >
                 <Send size={18} />
-                Send
+                {sending ? "Sending..." : "Send"}
               </button>
             </div>
           </div>
