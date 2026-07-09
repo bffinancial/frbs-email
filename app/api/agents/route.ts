@@ -1,5 +1,8 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendWelcomeEmail } from "@/lib/mail/sendWelcomeEmail";
+
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://www.frbsmail.com";
 
 function cleanName(value: string) {
   return value.trim().toLowerCase().replace(/[^a-z]/g, "");
@@ -7,6 +10,10 @@ function cleanName(value: string) {
 
 function createCompanyEmail(firstName: string, lastName: string) {
   return `${cleanName(firstName)}.${cleanName(lastName)}@frbsmail.com`;
+}
+
+function createTempPassword() {
+  return `FRBS-${crypto.randomUUID()}-Temp!`;
 }
 
 export async function GET() {
@@ -40,19 +47,59 @@ export async function POST(req: Request) {
     const fullName = `${firstName} ${lastName}`;
     const companyEmail = createCompanyEmail(firstName, lastName);
 
-    const inviteRedirectTo =
-      process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000/login";
+    const { data: existingAgent } = await supabaseAdmin
+      .from("agents")
+      .select("id")
+      .or(`forwarding_email.eq.${forwardingEmail},company_email.eq.${companyEmail}`)
+      .maybeSingle();
 
-    const { data: inviteData, error: inviteError } =
-      await supabaseAdmin.auth.admin.inviteUserByEmail(forwardingEmail, {
-        redirectTo: inviteRedirectTo,
-      });
-
-    if (inviteError) {
-      return NextResponse.json({ error: inviteError.message }, { status: 500 });
+    if (existingAgent) {
+      return NextResponse.json(
+        { error: "An agent already exists with this forwarding email or FRBS email." },
+        { status: 409 }
+      );
     }
 
-    const { data, error } = await supabaseAdmin
+    const { data: createdUser, error: createUserError } =
+      await supabaseAdmin.auth.admin.createUser({
+        email: forwardingEmail,
+        password: createTempPassword(),
+        email_confirm: true,
+        user_metadata: {
+          full_name: fullName,
+          frbs_email: companyEmail,
+          role,
+        },
+      });
+
+    if (createUserError || !createdUser.user) {
+      return NextResponse.json(
+        { error: createUserError?.message || "Unable to create login account." },
+        { status: 500 }
+      );
+    }
+
+    const { data: linkData, error: linkError } =
+      await supabaseAdmin.auth.admin.generateLink({
+        type: "recovery",
+        email: forwardingEmail,
+        options: {
+          redirectTo: `${SITE_URL}/login`,
+        },
+      });
+
+    if (linkError || !linkData?.properties?.action_link) {
+      await supabaseAdmin.auth.admin.deleteUser(createdUser.user.id);
+
+      return NextResponse.json(
+        { error: linkError?.message || "Unable to create password setup link." },
+        { status: 500 }
+      );
+    }
+
+    const inviteLink = linkData.properties.action_link;
+
+    const { data: agent, error: agentError } = await supabaseAdmin
       .from("agents")
       .insert({
         first_name: firstName,
@@ -61,20 +108,58 @@ export async function POST(req: Request) {
         forwarding_email: forwardingEmail,
         company_email: companyEmail,
         auth_email: forwardingEmail,
-        user_id: inviteData.user?.id || null,
+        user_id: createdUser.user.id,
         phone,
         role,
         signature_title: role,
         status: "active",
         is_active: true,
+        invite_status: "sent",
+        invite_sent_at: new Date().toISOString(),
+        suspended: false,
       })
       .select()
       .single();
 
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (agentError || !agent) {
+      await supabaseAdmin.auth.admin.deleteUser(createdUser.user.id);
+
+      return NextResponse.json(
+        { error: agentError?.message || "Unable to create agent profile." },
+        { status: 500 }
+      );
+    }
+
+    const welcomeResult = await sendWelcomeEmail({
+      to: forwardingEmail,
+      fullName,
+      companyEmail,
+      role,
+      inviteLink,
+    });
+
+    if ("error" in welcomeResult && welcomeResult.error) {
+      await supabaseAdmin
+        .from("agents")
+        .update({
+          invite_status: "email_failed",
+        })
+        .eq("id", agent.id);
+
+      return NextResponse.json(
+        {
+          error: `Agent was created, but the welcome email failed: ${welcomeResult.error.message}`,
+          agent,
+        },
+        { status: 500 }
+      );
+    }
 
     return NextResponse.json(
-      { agent: data, message: "Agent created and invite email sent." },
+      {
+        agent,
+        message: `Agent created. Welcome email sent to ${forwardingEmail}.`,
+      },
       { status: 201 }
     );
   } catch (error) {
