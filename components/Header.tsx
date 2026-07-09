@@ -10,6 +10,7 @@ import {
   Inbox,
   LayoutDashboard,
   LogOut,
+  MessageCircle,
   PenLine,
   Send,
   Settings,
@@ -66,6 +67,7 @@ export default function Header() {
     { href: "/sent", label: "Sent", icon: Send },
     { href: "/drafts", label: "Drafts", icon: Archive },
     { href: "/templates", label: "Templates", icon: FileText },
+    { href: "/connect", label: "Connect", icon: MessageCircle },
     ...(isAdmin ? [{ href: "/agents", label: "Agents", icon: Users }] : []),
     { href: "/settings", label: "Settings", icon: Settings },
   ];
@@ -73,8 +75,6 @@ export default function Header() {
   return (
     <header className="sticky top-0 z-50 border-b border-[#4b0008]/10 bg-white shadow-sm">
       <div className="mx-auto flex h-24 max-w-7xl items-center px-6">
-
-        {/* Logo */}
         <Link href="/dashboard" className="shrink-0">
           <Image
             src="/frbs-logo.png"
@@ -86,7 +86,6 @@ export default function Header() {
           />
         </Link>
 
-        {/* Navigation */}
         <nav className="ml-10 flex flex-1 items-center justify-center gap-2">
           {nav.map((item) => {
             const Icon = item.icon;
@@ -109,16 +108,12 @@ export default function Header() {
           })}
         </nav>
 
-        {/* Right Side */}
         <div className="ml-auto flex items-center gap-4">
-
           <div className="hidden text-right md:block">
             <p className="font-semibold text-[#4b0008]">
               {agent?.full_name ?? "Loading..."}
             </p>
-            <p className="text-xs text-gray-500">
-              {agent?.role ?? ""}
-            </p>
+            <p className="text-xs text-gray-500">{agent?.role ?? ""}</p>
           </div>
 
           <button
@@ -128,7 +123,6 @@ export default function Header() {
             <LogOut size={18} />
             Logout
           </button>
-
         </div>
       </div>
     </header>

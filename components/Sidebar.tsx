@@ -14,16 +14,20 @@ import {
   UserRound,
   Settings,
   BarChart3,
-  MessageCircle,
 } from "lucide-react";
 
 const sections = [
   {
     title: "",
     links: [
-      { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+      {
+        href: "/dashboard",
+        label: "Dashboard",
+        icon: LayoutDashboard,
+      },
     ],
   },
+
   {
     title: "MAIL",
     links: [
@@ -34,12 +38,7 @@ const sections = [
       { href: "/templates", label: "Templates", icon: FileText },
     ],
   },
-  {
-    title: "CONNECT",
-    links: [
-      { href: "/connect", label: "FRBS Connect", icon: MessageCircle },
-    ],
-  },
+
   {
     title: "PEOPLE",
     links: [
@@ -47,6 +46,7 @@ const sections = [
       { href: "/agents", label: "Agents", icon: Users },
     ],
   },
+
   {
     title: "TOOLS",
     links: [
@@ -54,6 +54,7 @@ const sections = [
       { href: "/reports", label: "Reports", icon: BarChart3 },
     ],
   },
+
   {
     title: "SYSTEM",
     links: [
@@ -68,8 +69,12 @@ export default function Sidebar() {
   return (
     <aside className="w-72 border-r border-[#4b0008]/10 bg-white">
       <div className="p-6">
+
         {sections.map((section) => (
-          <div key={section.title || "main"} className="mb-8">
+          <div
+            key={section.title}
+            className="mb-8"
+          >
             {section.title && (
               <p className="mb-3 text-xs font-bold tracking-[0.25em] text-[#7a1118]">
                 {section.title}
@@ -79,13 +84,17 @@ export default function Sidebar() {
             <div className="space-y-1">
               {section.links.map((link) => {
                 const Icon = link.icon;
-                const active = pathname === link.href;
+
+                const active =
+                  pathname === link.href;
 
                 return (
                   <Link
                     key={link.href}
                     href={link.href}
-                    className={`flex items-center gap-3 rounded-xl px-4 py-3 font-semibold transition ${
+                    className={`flex items-center gap-3 rounded-xl px-4 py-3 font-semibold transition
+
+                    ${
                       active
                         ? "bg-[#4b0008] text-white"
                         : "hover:bg-[#f6eee7]"
