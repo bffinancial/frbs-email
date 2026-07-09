@@ -35,7 +35,7 @@ export default function ConnectPage() {
   const [userId, setUserId] = useState<string | null>(null);
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
-
+const [debugInfo, setDebugInfo] = useState("");
   const [channels, setChannels] = useState<Channel[]>([]);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -98,7 +98,8 @@ export default function ConnectPage() {
     }
 
     setUserId(user.id);
-
+    setDebugInfo(`Logged in as: ${user.email} | User ID: ${user.id}`);
+console.log("CURRENT USER:", user.id, user.email);
     const { data } = await supabaseClient
       .from("agents")
       .select("id")
@@ -231,19 +232,24 @@ export default function ConnectPage() {
   }
 
   if (!hasAccess) {
-    return (
-      <AppLayout
-        title="FRBS Connect"
-        subtitle="Secure internal chat for active agents."
-      >
-        <div className="rounded-2xl border border-red-200 bg-white p-8 text-red-700 shadow-sm">
+  return (
+    <AppLayout
+      title="FRBS Connect"
+      subtitle="Secure internal chat for active agents."
+    >
+      <div className="rounded-2xl border border-red-200 bg-white p-8 text-red-700 shadow-sm">
+        <p>
           You do not currently have access to FRBS Connect. Only active agents
           can use this feature.
-        </div>
-      </AppLayout>
-    );
-  }
+        </p>
 
+        <p className="mt-4 text-xs text-[#4b0008]">
+          {debugInfo || "No logged-in user found."}
+        </p>
+      </div>
+    </AppLayout>
+  );
+}
   return (
     <AppLayout
       title="FRBS Connect"
