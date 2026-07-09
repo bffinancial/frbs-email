@@ -4,6 +4,17 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function previewText(value: string, max = 220) {
+  return value.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
 export async function GET() {
   return NextResponse.json({
     ok: true,
@@ -47,9 +58,7 @@ export async function POST(req: Request) {
           : event.data?.to;
 
     const toEmail =
-      typeof toEmailRaw === "string"
-        ? toEmailRaw.toLowerCase().trim()
-        : "";
+      typeof toEmailRaw === "string" ? toEmailRaw.toLowerCase().trim() : "";
 
     const fromEmail =
       typeof receivedEmail.from === "string"
@@ -59,28 +68,25 @@ export async function POST(req: Request) {
     const subject =
       receivedEmail.subject || event.data?.subject || "(No subject)";
 
-    const body =
-      receivedEmail.text ||
-      receivedEmail.html ||
-      "";
+    const body = receivedEmail.text || receivedEmail.html || "";
 
     if (!toEmail) {
-      return NextResponse.json({ error: "Missing recipient email." }, { status: 400 });
+      return NextResponse.json(
+        { error: "Missing recipient email." },
+        { status: 400 }
+      );
     }
 
     const { data: agent, error: agentError } = await supabaseAdmin
       .from("agents")
-      .select("id, forwarding_email, company_email")
+      .select("id, forwarding_email, company_email, full_name")
       .eq("company_email", toEmail)
       .maybeSingle();
 
     if (agentError) {
       console.error("AGENT LOOKUP ERROR:", agentError);
 
-      return NextResponse.json(
-        { error: agentError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: agentError.message }, { status: 500 });
     }
 
     if (!agent) {
@@ -120,15 +126,65 @@ export async function POST(req: Request) {
       opened: false,
       starred: false,
       deleted: false,
+      provider_message_id: emailId,
     });
 
     if (emailError) {
       console.error("EMAIL INSERT ERROR:", emailError);
 
-      return NextResponse.json(
-        { error: emailError.message },
-        { status: 500 }
-      );
+      return NextResponse.json({ error: emailError.message }, { status: 500 });
+    }
+
+    if (agent.forwarding_email) {
+      const inboxUrl = "https://www.frbsmail.com/inbox";
+      const cleanPreview = previewText(body);
+      const notificationSubject = `New FRBS Mail: ${subject}`;
+
+      const notificationResult = await resend.emails.send({
+        from: "FRBS Mail Notifications <notifications@frbsmail.com>",
+        to: [agent.forwarding_email],
+        subject: notificationSubject,
+        text: `You received a new email in FRBS Mail.
+
+From: ${fromEmail}
+To: ${toEmail}
+Subject: ${subject}
+
+Preview:
+${cleanPreview}
+
+Open Inbox:
+${inboxUrl}`,
+        html: `
+          <div style="font-family:Arial,Helvetica,sans-serif;background:#f6f3ef;padding:24px;">
+            <div style="max-width:640px;margin:0 auto;background:#ffffff;border:1px solid #eadede;border-radius:18px;overflow:hidden;">
+              <div style="background:#4b0008;color:#ffffff;padding:20px 24px;">
+                <h1 style="margin:0;font-size:22px;">New FRBS Mail Received</h1>
+                <p style="margin:8px 0 0;color:#f4d7d9;">${escapeHtml(toEmail)}</p>
+              </div>
+
+              <div style="padding:24px;color:#2c0004;">
+                <p><strong>From:</strong> ${escapeHtml(fromEmail)}</p>
+                <p><strong>Subject:</strong> ${escapeHtml(subject)}</p>
+
+                <div style="margin-top:18px;padding:16px;background:#fbfaf8;border-radius:14px;border:1px solid #eadede;">
+                  ${escapeHtml(cleanPreview || "No preview available.")}
+                </div>
+
+                <p style="margin-top:24px;">
+                  <a href="${inboxUrl}" style="display:inline-block;background:#4b0008;color:#ffffff;text-decoration:none;padding:12px 18px;border-radius:12px;font-weight:bold;">
+                    Open FRBS Mail Inbox
+                  </a>
+                </p>
+              </div>
+            </div>
+          </div>
+        `,
+      });
+
+      if ("error" in notificationResult && notificationResult.error) {
+        console.error("NOTIFICATION EMAIL ERROR:", notificationResult.error);
+      }
     }
 
     return NextResponse.json({ success: true });
