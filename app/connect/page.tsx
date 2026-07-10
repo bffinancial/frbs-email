@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import AppLayout from "@/components/AppLayout";
 import ConnectShell from "@/components/connect/ConnectShell";
 import AgentAvatar from "@/components/connect/AgentAvatar";
@@ -14,22 +15,44 @@ import {
   Search,
   Send,
   ShieldCheck,
+  UserRoundPlus,
   Users,
 } from "lucide-react";
 
-type Channel = {
+type ConversationType =
+  | "channel"
+  | "announcement"
+  | "direct"
+  | "group";
+
+type Conversation = {
   id: string;
-  name: string;
-  type: string;
+  type: ConversationType;
+  name: string | null;
+  slug: string | null;
   is_locked: boolean;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
 };
 
-type ChatMessage = {
+type ConversationMember = {
+  conversation_id: string;
+  agent_id: string;
+  member_role: "owner" | "admin" | "member";
+  notifications_enabled: boolean;
+  last_read_at: string | null;
+  joined_at: string;
+};
+
+type ConversationMessage = {
   id: string;
-  channel_id: string;
-  sender_id: string;
-  message: string;
+  conversation_id: string;
+  sender_agent_id: string | null;
+  body: string;
   created_at: string;
+  edited_at: string | null;
+  deleted_at: string | null;
 };
 
 type Agent = {
@@ -41,165 +64,292 @@ type Agent = {
   company_email: string | null;
   auth_email: string | null;
   role: string | null;
+  is_active: boolean;
+  suspended: boolean;
 };
 
 export default function ConnectPage() {
-  const [userId, setUserId] = useState<string | null>(null);
+  const router = useRouter();
+
   const [checkingAccess, setCheckingAccess] = useState(true);
   const [hasAccess, setHasAccess] = useState(false);
 
-  const [channels, setChannels] = useState<Channel[]>([]);
-  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [newMessage, setNewMessage] = useState("");
-  const [sending, setSending] = useState(false);
-  const [search, setSearch] = useState("");
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [memberships, setMemberships] = useState<ConversationMember[]>([]);
+  const [messages, setMessages] = useState<ConversationMessage[]>([]);
 
-  const activeChannel = useMemo(
-    () => channels.find((channel) => channel.id === activeChannelId),
-    [channels, activeChannelId]
+  const [activeConversationId, setActiveConversationId] = useState<
+    string | null
+  >(null);
+
+  const [newMessage, setNewMessage] = useState("");
+  const [search, setSearch] = useState("");
+  const [sending, setSending] = useState(false);
+  const [startingDirectMessage, setStartingDirectMessage] = useState<
+    string | null
+  >(null);
+
+  const activeConversation = useMemo(
+    () =>
+      conversations.find(
+        (conversation) => conversation.id === activeConversationId
+      ) || null,
+    [conversations, activeConversationId]
+  );
+
+  const channelConversations = useMemo(
+    () =>
+      conversations.filter(
+        (conversation) =>
+          conversation.type === "channel" ||
+          conversation.type === "announcement"
+      ),
+    [conversations]
+  );
+
+  const directConversations = useMemo(
+    () =>
+      conversations.filter(
+        (conversation) => conversation.type === "direct"
+      ),
+    [conversations]
   );
 
   const filteredMessages = useMemo(() => {
     if (!search.trim()) return messages;
 
+    const query = search.toLowerCase();
+
     return messages.filter((message) =>
-      message.message.toLowerCase().includes(search.toLowerCase())
+      message.body.toLowerCase().includes(query)
     );
   }, [messages, search]);
 
+  const canPostInActiveConversation = useMemo(() => {
+    if (!activeConversation) return false;
+
+    if (!activeConversation.is_locked) return true;
+
+    return isCurrentAgentAdmin();
+  }, [activeConversation, currentAgent]);
+
   useEffect(() => {
-    loadUserAndAccess();
+    initializeConnect();
   }, []);
 
   useEffect(() => {
-    if (!hasAccess) return;
-    loadChannels();
-    loadAgents();
-  }, [hasAccess]);
+    if (!activeConversationId || !hasAccess) return;
 
-  useEffect(() => {
-    if (!activeChannelId || !hasAccess) return;
+    loadMessages(activeConversationId);
 
-    loadMessages(activeChannelId);
-
-    const channel = supabaseClient
-      .channel(`frbs-connect-${activeChannelId}`)
+    const realtimeChannel = supabaseClient
+      .channel(`conversation-${activeConversationId}`)
       .on(
         "postgres_changes",
         {
           event: "INSERT",
           schema: "public",
-          table: "chat_messages",
-          filter: `channel_id=eq.${activeChannelId}`,
+          table: "conversation_messages",
+          filter: `conversation_id=eq.${activeConversationId}`,
         },
         (payload) => {
-          setMessages((current) => [...current, payload.new as ChatMessage]);
+          const incomingMessage =
+            payload.new as ConversationMessage;
+
+          setMessages((current) => {
+            const alreadyExists = current.some(
+              (message) => message.id === incomingMessage.id
+            );
+
+            if (alreadyExists) return current;
+
+            return [...current, incomingMessage];
+          });
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
+          event: "UPDATE",
+          schema: "public",
+          table: "conversation_messages",
+          filter: `conversation_id=eq.${activeConversationId}`,
+        },
+        (payload) => {
+          const updatedMessage =
+            payload.new as ConversationMessage;
+
+          setMessages((current) =>
+            current.map((message) =>
+              message.id === updatedMessage.id
+                ? updatedMessage
+                : message
+            )
+          );
         }
       )
       .subscribe();
 
     return () => {
-      supabaseClient.removeChannel(channel);
+      supabaseClient.removeChannel(realtimeChannel);
     };
-  }, [activeChannelId, hasAccess]);
+  }, [activeConversationId, hasAccess]);
 
-  async function loadUserAndAccess() {
+  async function initializeConnect() {
     setCheckingAccess(true);
 
     const {
       data: { user },
+      error: userError,
     } = await supabaseClient.auth.getUser();
 
-    if (!user) {
+    if (userError || !user) {
       setHasAccess(false);
       setCheckingAccess(false);
       return;
     }
 
-    setUserId(user.id);
-
-    const { data } = await supabaseClient
+    const { data: agent, error: agentError } = await supabaseClient
       .from("agents")
-      .select("id")
-      .or(
-        `user_id.eq.${user.id},auth_email.eq.${user.email},company_email.eq.${user.email}`
+      .select(
+        "id,user_id,full_name,first_name,last_name,company_email,auth_email,role,is_active,suspended"
       )
+      .eq("user_id", user.id)
       .eq("is_active", true)
       .eq("suspended", false)
       .maybeSingle();
 
-    setHasAccess(!!data);
+    if (agentError || !agent) {
+      console.error("Agent access error:", agentError);
+      setHasAccess(false);
+      setCheckingAccess(false);
+      return;
+    }
+
+    setCurrentAgent(agent);
+    setHasAccess(true);
+
+    await loadWorkspace(agent.id);
+
     setCheckingAccess(false);
   }
 
-  async function loadChannels() {
+  async function loadWorkspace(
+    currentAgentId: string,
+    preferredConversationId?: string
+  ) {
+    const { data: memberRows, error: membershipError } =
+      await supabaseClient
+        .from("conversation_members")
+        .select("*")
+        .eq("agent_id", currentAgentId)
+        .order("joined_at", { ascending: true });
+
+    if (membershipError) {
+      console.error("Membership error:", membershipError);
+      return;
+    }
+
+    const loadedMemberships =
+      (memberRows as ConversationMember[]) || [];
+
+    setMemberships(loadedMemberships);
+
+    const conversationIds = loadedMemberships.map(
+      (membership) => membership.conversation_id
+    );
+
+    let loadedConversations: Conversation[] = [];
+
+    if (conversationIds.length > 0) {
+      const { data: conversationRows, error: conversationError } =
+        await supabaseClient
+          .from("conversations")
+          .select("*")
+          .in("id", conversationIds)
+          .order("created_at", { ascending: true });
+
+      if (conversationError) {
+        console.error("Conversation error:", conversationError);
+        return;
+      }
+
+      loadedConversations =
+        (conversationRows as Conversation[]) || [];
+    }
+
+    const { data: agentRows, error: agentsError } =
+      await supabaseClient
+        .from("agents")
+        .select(
+          "id,user_id,full_name,first_name,last_name,company_email,auth_email,role,is_active,suspended"
+        )
+        .eq("is_active", true)
+        .eq("suspended", false)
+        .order("full_name", { ascending: true });
+
+    if (agentsError) {
+      console.error("Agents error:", agentsError);
+      return;
+    }
+
+    setAgents((agentRows as Agent[]) || []);
+    setConversations(loadedConversations);
+
+    const nextConversationId =
+      preferredConversationId ||
+      activeConversationId ||
+      loadedConversations.find(
+        (conversation) => conversation.slug === "general"
+      )?.id ||
+      loadedConversations[0]?.id ||
+      null;
+
+    setActiveConversationId(nextConversationId);
+  }
+
+  async function loadMessages(conversationId: string) {
+    setMessages([]);
+
     const { data, error } = await supabaseClient
-      .from("chat_channels")
+      .from("conversation_messages")
       .select("*")
+      .eq("conversation_id", conversationId)
+      .is("deleted_at", null)
       .order("created_at", { ascending: true });
 
     if (error) {
-      console.error(error);
+      console.error("Message loading error:", error);
       return;
     }
 
-    setChannels(data || []);
-
-    if (!activeChannelId && data && data.length > 0) {
-      setActiveChannelId(data[0].id);
-    }
-  }
-
-  async function loadAgents() {
-    const { data, error } = await supabaseClient
-      .from("agents")
-      .select(
-        "id,user_id,full_name,first_name,last_name,company_email,auth_email,role"
-      )
-      .eq("is_active", true)
-      .eq("suspended", false)
-      .order("full_name", { ascending: true });
-
-    if (error) {
-      console.error(error);
-      return;
-    }
-
-    setAgents(data || []);
-  }
-
-  async function loadMessages(channelId: string) {
-    const { data, error } = await supabaseClient
-      .from("chat_messages")
-      .select("*")
-      .eq("channel_id", channelId)
-      .order("created_at", { ascending: true });
-
-    if (error) {
-      console.error(error);
-      return;
-    }
-
-    setMessages(data || []);
+    setMessages((data as ConversationMessage[]) || []);
   }
 
   async function sendMessage() {
-    if (!newMessage.trim() || !activeChannelId || !userId || sending) return;
-
-    if (activeChannel?.is_locked) {
-      alert("This channel is locked.");
+    if (
+      !newMessage.trim() ||
+      !activeConversationId ||
+      !currentAgent ||
+      sending ||
+      !canPostInActiveConversation
+    ) {
       return;
     }
 
     setSending(true);
 
-    const { error } = await supabaseClient.from("chat_messages").insert({
-      channel_id: activeChannelId,
-      sender_id: userId,
-      message: newMessage.trim(),
-    });
+    const messageBody = newMessage.trim();
+
+    const { error } = await supabaseClient
+      .from("conversation_messages")
+      .insert({
+        conversation_id: activeConversationId,
+        sender_agent_id: currentAgent.id,
+        body: messageBody,
+      });
 
     if (error) {
       alert(error.message);
@@ -211,51 +361,149 @@ export default function ConnectPage() {
     setSending(false);
   }
 
-  function getAgentByUserId(senderId: string) {
-    return agents.find((agent) => agent.user_id === senderId);
+  async function startDirectMessage(targetAgentId: string) {
+    if (!currentAgent || targetAgentId === currentAgent.id) return;
+
+    setStartingDirectMessage(targetAgentId);
+
+    const { data, error } = await supabaseClient.rpc(
+      "get_or_create_direct_conversation",
+      {
+        target_agent_id: targetAgentId,
+      }
+    );
+
+    if (error) {
+      alert(error.message);
+      setStartingDirectMessage(null);
+      return;
+    }
+
+    const conversationId = data as string;
+
+    await loadWorkspace(currentAgent.id, conversationId);
+
+    setActiveConversationId(conversationId);
+    setStartingDirectMessage(null);
   }
 
-  function getAgentName(senderId: string) {
-    const agent = getAgentByUserId(senderId);
+  function isCurrentAgentAdmin() {
+    const role = currentAgent?.role?.toLowerCase() || "";
 
-    if (!agent) return "FRBS Agent";
-    if (agent.full_name) return agent.full_name;
-
-    const name = `${agent.first_name || ""} ${agent.last_name || ""}`.trim();
-
-    return name || agent.company_email || agent.auth_email || "FRBS Agent";
+    return role.includes("admin") || role.includes("owner");
   }
 
-  function getAgentRole(senderId: string) {
-    return getAgentByUserId(senderId)?.role || "FORWARD Agent";
+  function getAgentName(agent: Agent | undefined | null) {
+    if (!agent) return "FORWARD Agent";
+
+    if (agent.full_name?.trim()) {
+      return agent.full_name.trim();
+    }
+
+    const combinedName = `${agent.first_name || ""} ${
+      agent.last_name || ""
+    }`.trim();
+
+    return (
+      combinedName ||
+      agent.company_email ||
+      agent.auth_email ||
+      "FORWARD Agent"
+    );
   }
 
-  function getAgentDisplayName(agent: Agent) {
-    if (agent.full_name) return agent.full_name;
+  function getAgentById(agentId: string | null) {
+    if (!agentId) return null;
 
-    const name = `${agent.first_name || ""} ${agent.last_name || ""}`.trim();
+    if (currentAgent?.id === agentId) {
+      return currentAgent;
+    }
 
-    return name || agent.company_email || agent.auth_email || "FORWARD Agent";
+    return agents.find((agent) => agent.id === agentId) || null;
+  }
+
+  function getConversationMembers(conversationId: string) {
+    return memberships.filter(
+      (membership) =>
+        membership.conversation_id === conversationId
+    );
+  }
+
+  function getDirectMessageAgent(conversationId: string) {
+    const directMembers = getConversationMembers(conversationId);
+
+    const otherMember = directMembers.find(
+      (membership) => membership.agent_id !== currentAgent?.id
+    );
+
+    return getAgentById(otherMember?.agent_id || null);
+  }
+
+  function getConversationTitle(conversation: Conversation | null) {
+    if (!conversation) return "Conversation";
+
+    if (conversation.type === "direct") {
+      return getAgentName(
+        getDirectMessageAgent(conversation.id)
+      );
+    }
+
+    return conversation.name || "Conversation";
+  }
+
+  function getConversationSubtitle(
+    conversation: Conversation | null
+  ) {
+    if (!conversation) return "";
+
+    if (conversation.type === "direct") {
+      const otherAgent = getDirectMessageAgent(conversation.id);
+
+      return (
+        otherAgent?.role ||
+        otherAgent?.company_email ||
+        "Private direct message"
+      );
+    }
+
+    if (conversation.type === "announcement") {
+      return "Official FORWARD company announcements.";
+    }
+
+    if (conversation.slug === "help-desk") {
+      return "Ask fellow agents for assistance.";
+    }
+
+    return "Talk with other FORWARD agents in real time.";
+  }
+
+  function formatMessageTime(value: string) {
+    return new Intl.DateTimeFormat("en-US", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(value));
   }
 
   if (checkingAccess) {
     return (
       <AppLayout
         title="FRBS Connect"
-        subtitle="Secure internal chat for active agents."
+        subtitle="Secure internal communication for active agents."
       >
         <div className="rounded-3xl bg-white p-8 shadow-sm">
-          Checking access...
+          Loading FRBS Connect...
         </div>
       </AppLayout>
     );
   }
 
-  if (!hasAccess) {
+  if (!hasAccess || !currentAgent) {
     return (
       <AppLayout
         title="FRBS Connect"
-        subtitle="Secure internal chat for active agents."
+        subtitle="Secure internal communication for active agents."
       >
         <div className="rounded-3xl border border-red-200 bg-white p-8 text-red-700 shadow-sm">
           You do not currently have access to FRBS Connect. Only active agents
@@ -268,7 +516,7 @@ export default function ConnectPage() {
   return (
     <AppLayout
       title="FRBS Connect"
-      subtitle="Private Discord-style communication for existing agents."
+      subtitle="Channels and private conversations for FORWARD agents."
     >
       <ConnectShell
         left={
@@ -276,8 +524,12 @@ export default function ConnectPage() {
             <div className="mb-6 rounded-2xl bg-[#4b0008] p-5 text-white">
               <div className="flex items-center gap-3">
                 <MessageCircle />
+
                 <div>
-                  <p className="text-lg font-black">FRBS Connect</p>
+                  <p className="text-lg font-black">
+                    FRBS Connect
+                  </p>
+
                   <p className="text-xs font-semibold text-white/70">
                     Internal agent workspace
                   </p>
@@ -290,47 +542,101 @@ export default function ConnectPage() {
             </p>
 
             <div className="space-y-2">
-              {channels.map((channel) => (
-                <button
-                  key={channel.id}
-                  onClick={() => setActiveChannelId(channel.id)}
-                  className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left font-black transition ${
-                    activeChannelId === channel.id
-                      ? "bg-[#4b0008] text-white"
-                      : "text-[#4b0008] hover:bg-[#f6eee7]"
-                  }`}
-                >
-                  <span className="flex items-center gap-2">
-                    {channel.is_locked ? <Lock size={16} /> : <Hash size={16} />}
-                    {channel.name}
-                  </span>
-                </button>
-              ))}
+              {channelConversations.map((conversation) => {
+                const active =
+                  conversation.id === activeConversationId;
+
+                return (
+                  <button
+                    key={conversation.id}
+                    type="button"
+                    onClick={() =>
+                      setActiveConversationId(conversation.id)
+                    }
+                    className={`flex w-full items-center justify-between rounded-2xl px-4 py-3 text-left font-black transition ${
+                      active
+                        ? "bg-[#4b0008] text-white"
+                        : "text-[#4b0008] hover:bg-[#f6eee7]"
+                    }`}
+                  >
+                    <span className="flex items-center gap-2">
+                      {conversation.is_locked ? (
+                        <Lock size={16} />
+                      ) : (
+                        <Hash size={16} />
+                      )}
+
+                      {conversation.name || "Channel"}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
 
             <div className="mt-8 border-t border-[#4b0008]/10 pt-6">
-              <p className="mb-3 text-xs font-black uppercase tracking-[0.25em] text-[#7a1118]">
-                Direct Messages
-              </p>
+              <div className="mb-3 flex items-center justify-between">
+                <p className="text-xs font-black uppercase tracking-[0.25em] text-[#7a1118]">
+                  Direct Messages
+                </p>
 
-              <div className="space-y-2">
-                {agents.slice(0, 5).map((agent) => (
-                  <button
-                    key={agent.id}
-                    className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left hover:bg-[#f6eee7]"
-                  >
-                    <AgentAvatar name={getAgentDisplayName(agent)} size="sm" />
-                    <div className="min-w-0">
-                      <p className="truncate text-sm font-black">
-                        {getAgentDisplayName(agent)}
-                      </p>
-                      <p className="truncate text-xs font-semibold text-[#6f2b31]">
-                        Coming soon
-                      </p>
-                    </div>
-                  </button>
-                ))}
+                <UserRoundPlus size={16} />
               </div>
+
+              {directConversations.length === 0 ? (
+                <p className="rounded-xl bg-[#f6eee7] p-3 text-xs font-semibold text-[#6f2b31]">
+                  Select an agent to start a private message.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {directConversations.map((conversation) => {
+                    const otherAgent =
+                      getDirectMessageAgent(conversation.id);
+
+                    const agentName =
+                      getAgentName(otherAgent);
+
+                    const active =
+                      conversation.id === activeConversationId;
+
+                    return (
+                      <button
+                        key={conversation.id}
+                        type="button"
+                        onClick={() =>
+                          setActiveConversationId(conversation.id)
+                        }
+                        className={`flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition ${
+                          active
+                            ? "bg-[#4b0008] text-white"
+                            : "hover:bg-[#f6eee7]"
+                        }`}
+                      >
+                        <AgentAvatar
+                          name={agentName}
+                          size="sm"
+                        />
+
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-black">
+                            {agentName}
+                          </p>
+
+                          <p
+                            className={`truncate text-xs font-semibold ${
+                              active
+                                ? "text-white/70"
+                                : "text-[#6f2b31]"
+                            }`}
+                          >
+                            {otherAgent?.role ||
+                              "Private conversation"}
+                          </p>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
         }
@@ -338,22 +644,30 @@ export default function ConnectPage() {
           <>
             <div className="border-b border-[#4b0008]/10 px-6 py-5">
               <div className="flex items-center justify-between gap-4">
-                <div>
-                  <h2 className="text-2xl font-black">
-                    #{activeChannel?.name || "Channel"}
+                <div className="min-w-0">
+                  <h2 className="truncate text-2xl font-black">
+                    {activeConversation?.type === "direct"
+                      ? getConversationTitle(activeConversation)
+                      : `#${getConversationTitle(
+                          activeConversation
+                        )}`}
                   </h2>
-                  <p className="text-sm font-semibold text-[#6f2b31]">
-                    {activeChannel?.is_locked
-                      ? "Announcements are locked for admin updates."
-                      : "Talk with other FORWARD agents in real time."}
+
+                  <p className="truncate text-sm font-semibold text-[#6f2b31]">
+                    {getConversationSubtitle(
+                      activeConversation
+                    )}
                   </p>
                 </div>
 
                 <div className="flex items-center gap-2 rounded-2xl border border-[#4b0008]/10 bg-[#fbfaf8] px-4 py-3">
                   <Search size={16} />
+
                   <input
                     value={search}
-                    onChange={(e) => setSearch(e.target.value)}
+                    onChange={(event) =>
+                      setSearch(event.target.value)
+                    }
                     placeholder="Search messages"
                     className="w-40 bg-transparent text-sm outline-none"
                   />
@@ -362,23 +676,46 @@ export default function ConnectPage() {
             </div>
 
             <div className="flex-1 space-y-5 overflow-y-auto p-6">
-              {filteredMessages.length === 0 ? (
+              {!activeConversation ? (
                 <ConnectEmptyState
-                  title="No messages yet"
-                  text="Start the conversation with your fellow agents."
+                  title="Choose a conversation"
+                  text="Select a channel or start a direct message."
+                />
+              ) : filteredMessages.length === 0 ? (
+                <ConnectEmptyState
+                  title={
+                    search
+                      ? "No matching messages"
+                      : "No messages yet"
+                  }
+                  text={
+                    search
+                      ? "Try another search."
+                      : "Start the conversation."
+                  }
                 />
               ) : (
                 filteredMessages.map((message) => {
-                  const mine = message.sender_id === userId;
-                  const name = getAgentName(message.sender_id);
+                  const sender = getAgentById(
+                    message.sender_agent_id
+                  );
+
+                  const senderName = getAgentName(sender);
+                  const mine =
+                    message.sender_agent_id === currentAgent.id;
 
                   return (
-                    <div key={message.id} className="flex gap-3">
-                      <AgentAvatar name={name} />
+                    <div
+                      key={message.id}
+                      className="flex gap-3"
+                    >
+                      <AgentAvatar name={senderName} />
 
                       <div className="min-w-0 flex-1">
                         <div className="mb-1 flex flex-wrap items-center gap-2">
-                          <p className="font-black text-[#4b0008]">{name}</p>
+                          <p className="font-black text-[#4b0008]">
+                            {senderName}
+                          </p>
 
                           {mine && (
                             <span className="rounded-full bg-[#f6eee7] px-2 py-0.5 text-[11px] font-bold text-[#7a1118]">
@@ -387,17 +724,20 @@ export default function ConnectPage() {
                           )}
 
                           <p className="text-xs font-semibold text-[#6f2b31]">
-                            {getAgentRole(message.sender_id)}
+                            {sender?.role ||
+                              "FORWARD Agent"}
                           </p>
 
                           <p className="text-xs text-[#6f2b31]">
-                            {new Date(message.created_at).toLocaleString()}
+                            {formatMessageTime(
+                              message.created_at
+                            )}
                           </p>
                         </div>
 
                         <div className="rounded-2xl bg-[#f6eee7] px-5 py-3 text-[#4b0008]">
                           <p className="whitespace-pre-wrap text-sm font-semibold leading-6">
-                            {message.message}
+                            {message.body}
                           </p>
                         </div>
                       </div>
@@ -411,28 +751,47 @@ export default function ConnectPage() {
               <div className="flex gap-3">
                 <textarea
                   value={newMessage}
-                  onChange={(e) => setNewMessage(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
+                  onChange={(event) =>
+                    setNewMessage(event.target.value)
+                  }
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "Enter" &&
+                      !event.shiftKey
+                    ) {
+                      event.preventDefault();
                       sendMessage();
                     }
                   }}
-                  disabled={activeChannel?.is_locked}
-                  placeholder={
-                    activeChannel?.is_locked
-                      ? "This channel is locked."
-                      : `Message #${activeChannel?.name || "channel"}`
+                  disabled={
+                    !activeConversation ||
+                    !canPostInActiveConversation
                   }
-                  className="min-h-[56px] flex-1 resize-none rounded-2xl border border-[#4b0008]/15 px-4 py-3 outline-none focus:border-[#4b0008]"
+                  placeholder={
+                    !activeConversation
+                      ? "Select a conversation."
+                      : !canPostInActiveConversation
+                        ? "Only administrators can post here."
+                        : `Message ${getConversationTitle(
+                            activeConversation
+                          )}`
+                  }
+                  className="min-h-[56px] flex-1 resize-none rounded-2xl border border-[#4b0008]/15 px-4 py-3 outline-none focus:border-[#4b0008] disabled:bg-gray-100"
                 />
 
                 <button
+                  type="button"
                   onClick={sendMessage}
-                  disabled={sending || activeChannel?.is_locked}
-                  className="flex items-center gap-2 rounded-2xl bg-[#4b0008] px-6 py-3 font-black text-white disabled:opacity-50"
+                  disabled={
+                    sending ||
+                    !activeConversation ||
+                    !canPostInActiveConversation ||
+                    !newMessage.trim()
+                  }
+                  className="flex items-center gap-2 rounded-2xl bg-[#4b0008] px-6 py-3 font-black text-white disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Send size={18} />
+
                   {sending ? "Sending..." : "Send"}
                 </button>
               </div>
@@ -442,30 +801,52 @@ export default function ConnectPage() {
         right={
           <div className="flex h-full flex-col p-5">
             <p className="mb-4 text-xs font-black uppercase tracking-[0.25em] text-[#7a1118]">
-              Online Agents
+              Available Agents
             </p>
 
             <div className="space-y-3">
-              {agents.map((agent) => (
-                <div
-                  key={agent.id}
-                  className="flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm"
-                >
-                  <div className="relative">
-                    <AgentAvatar name={getAgentDisplayName(agent)} size="sm" />
-                    <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-white bg-green-500" />
-                  </div>
+              {agents
+                .filter(
+                  (agent) => agent.id !== currentAgent.id
+                )
+                .map((agent) => {
+                  const agentName = getAgentName(agent);
+                  const loading =
+                    startingDirectMessage === agent.id;
 
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-black">
-                      {getAgentDisplayName(agent)}
-                    </p>
-                    <p className="truncate text-xs font-semibold text-[#6f2b31]">
-                      {agent.role || "FORWARD Agent"}
-                    </p>
-                  </div>
-                </div>
-              ))}
+                  return (
+                    <button
+                      key={agent.id}
+                      type="button"
+                      onClick={() =>
+                        startDirectMessage(agent.id)
+                      }
+                      disabled={loading}
+                      className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm transition hover:bg-[#f6eee7] disabled:opacity-60"
+                    >
+                      <AgentAvatar
+                        name={agentName}
+                        size="sm"
+                      />
+
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-black">
+                          {agentName}
+                        </p>
+
+                        <p className="truncate text-xs font-semibold text-[#6f2b31]">
+                          {loading
+                            ? "Opening conversation..."
+                            : agent.role ||
+                              agent.company_email ||
+                              "FORWARD Agent"}
+                        </p>
+                      </div>
+
+                      <MessageCircle size={16} />
+                    </button>
+                  );
+                })}
             </div>
 
             <div className="mt-6 rounded-3xl border border-[#4b0008]/10 bg-white p-5 shadow-sm">
@@ -474,20 +855,24 @@ export default function ConnectPage() {
               </p>
 
               <div className="space-y-3">
-                <button className="flex w-full items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 text-left font-black text-[#4b0008]">
+                <div className="flex items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 font-black text-[#4b0008]">
                   <Users size={18} />
-                  Start Direct Message
-                </button>
+                  Select an agent to message
+                </div>
 
-                <button className="flex w-full items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 text-left font-black text-[#4b0008]">
+                <button
+                  type="button"
+                  onClick={() => router.push("/settings")}
+                  className="flex w-full items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 text-left font-black text-[#4b0008]"
+                >
                   <Bell size={18} />
                   Alert Preferences
                 </button>
 
-                <button className="flex w-full items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 text-left font-black text-[#4b0008]">
+                <div className="flex items-center gap-3 rounded-2xl bg-[#f6eee7] px-4 py-3 font-black text-[#4b0008]">
                   <ShieldCheck size={18} />
-                  Company Only
-                </button>
+                  Company agents only
+                </div>
               </div>
             </div>
           </div>
