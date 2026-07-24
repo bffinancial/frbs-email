@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
 import {
@@ -13,7 +13,6 @@ import { supabaseClient } from "@/lib/supabaseClient";
 
 export default function CreatePasswordPage() {
   const router = useRouter();
-  const verificationStarted = useRef(false);
 
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -28,18 +27,38 @@ export default function CreatePasswordPage() {
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    if (verificationStarted.current) {
-      return;
+    let finished = false;
+
+    async function markReady() {
+      if (finished) return;
+
+      const {
+        data: { session },
+        error,
+      } = await supabaseClient.auth.getSession();
+
+      if (error) {
+        throw error;
+      }
+
+      if (!session) {
+        return false;
+      }
+
+      finished = true;
+      setReady(true);
+      setLoading(false);
+      setStatus(
+        "Create your password to activate your FORWARD Mail account."
+      );
+
+      return true;
     }
-
-    verificationStarted.current = true;
-
-    let mounted = true;
 
     async function verifyPasswordLink() {
       try {
         const currentUrl = new URL(window.location.href);
-        const code = currentUrl.searchParams.get("code");
+
         const errorDescription =
           currentUrl.searchParams.get("error_description");
 
@@ -51,13 +70,13 @@ export default function CreatePasswordPage() {
           );
         }
 
+        const code = currentUrl.searchParams.get("code");
+
         if (code) {
           setStatus("Activating secure password session...");
 
           const { error: exchangeError } =
-            await supabaseClient.auth.exchangeCodeForSession(
-              code
-            );
+            await supabaseClient.auth.exchangeCodeForSession(code);
 
           if (exchangeError) {
             throw exchangeError;
@@ -66,6 +85,7 @@ export default function CreatePasswordPage() {
           currentUrl.searchParams.delete("code");
           currentUrl.searchParams.delete("type");
           currentUrl.searchParams.delete("token");
+          currentUrl.searchParams.delete("token_hash");
 
           window.history.replaceState(
             {},
@@ -74,68 +94,92 @@ export default function CreatePasswordPage() {
           );
         }
 
-        const {
-          data: { session },
-          error: sessionError,
-        } = await supabaseClient.auth.getSession();
+        const sessionReady = await markReady();
 
-        if (sessionError) {
-          throw sessionError;
+        if (sessionReady) {
+          return;
         }
 
-        if (!session) {
-          throw new Error(
+        setStatus("Completing secure account verification...");
+
+        const {
+          data: { subscription },
+        } = supabaseClient.auth.onAuthStateChange(
+          async (event, session) => {
+            if (
+              session &&
+              (event === "PASSWORD_RECOVERY" ||
+                event === "SIGNED_IN" ||
+                event === "INITIAL_SESSION")
+            ) {
+              if (finished) return;
+
+              finished = true;
+              setReady(true);
+              setLoading(false);
+              setStatus(
+                "Create your password to activate your FORWARD Mail account."
+              );
+            }
+          }
+        );
+
+        const timeoutId = window.setTimeout(async () => {
+          if (finished) return;
+
+          const finalCheck = await markReady();
+
+          if (finalCheck) {
+            return;
+          }
+
+          finished = true;
+          setLoading(false);
+          setReady(false);
+          setStatus(
             "This password link is invalid, expired, or has already been used. Please ask your administrator to resend the invitation."
           );
-        }
+        }, 8000);
 
-        if (!mounted) {
-          return;
-        }
-
-        setReady(true);
-        setStatus(
-          "Create your password to activate your FORWARD Mail account."
-        );
+        return () => {
+          window.clearTimeout(timeoutId);
+          subscription.unsubscribe();
+        };
       } catch (error) {
-        if (!mounted) {
-          return;
-        }
-
         console.error(
           "CREATE PASSWORD VERIFICATION ERROR:",
           error
         );
 
+        finished = true;
         setReady(false);
+        setLoading(false);
         setStatus(
           error instanceof Error
             ? error.message
-            : "This password link is invalid or expired. Please ask your administrator to resend your invitation."
+            : "This password link is invalid or expired. Please ask your administrator to resend the invitation."
         );
-      } finally {
-        if (mounted) {
-          setLoading(false);
-        }
       }
     }
 
-    void verifyPasswordLink();
+    let cleanup: (() => void) | undefined;
+
+    void verifyPasswordLink().then((result) => {
+      if (typeof result === "function") {
+        cleanup = result;
+      }
+    });
 
     return () => {
-      mounted = false;
+      cleanup?.();
     };
   }, []);
 
   async function createPassword() {
-    if (saving) {
-      return;
-    }
+    if (saving) return;
 
     if (password.length < 8) {
-      setStatus(
-        "Password must be at least 8 characters."
-      );
+      setStatus("Password must be at least 8 characters.");
       return;
     }
 
@@ -183,10 +227,6 @@ export default function CreatePasswordPage() {
     }
   }
 
-  function goToLogin() {
-    router.replace("/login");
-  }
-
   return (
     <main className="flex min-h-screen items-center justify-center bg-[#f6f3ef] px-4 py-10 text-[#4b0008]">
       <section className="w-full max-w-xl overflow-hidden rounded-3xl border border-[#4b0008]/10 bg-white shadow-2xl">
@@ -218,19 +258,15 @@ export default function CreatePasswordPage() {
             className={`mb-6 rounded-2xl border p-4 text-sm font-bold ${
               success
                 ? "border-green-200 bg-green-50 text-green-800"
-                : ready
+                : ready || loading
                   ? "border-[#4b0008]/10 bg-[#fbfaf8] text-[#6f2b31]"
-                  : loading
-                    ? "border-[#4b0008]/10 bg-[#fbfaf8] text-[#6f2b31]"
-                    : "border-red-200 bg-red-50 text-red-800"
+                  : "border-red-200 bg-red-50 text-red-800"
             }`}
           >
             <div className="flex items-start gap-3">
               {loading || saving ? (
                 <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin" />
-              ) : success ? (
-                <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
-              ) : ready ? (
+              ) : success || ready ? (
                 <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
               ) : (
                 <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -287,7 +323,7 @@ export default function CreatePasswordPage() {
                 type="button"
                 onClick={() => void createPassword()}
                 disabled={saving}
-                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#4b0008] px-5 py-3 font-black text-white transition hover:bg-[#6b1018] disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-2 rounded-2xl bg-[#4b0008] px-5 py-3 font-black text-white transition hover:bg-[#6b1018] disabled:opacity-60"
               >
                 {saving ? (
                   <Loader2 className="h-5 w-5 animate-spin" />
@@ -305,8 +341,8 @@ export default function CreatePasswordPage() {
           {!loading && !ready && !success && (
             <button
               type="button"
-              onClick={goToLogin}
-              className="w-full rounded-2xl border border-[#4b0008]/20 px-5 py-3 font-black text-[#4b0008] transition hover:bg-[#f5eee7]"
+              onClick={() => router.replace("/login")}
+              className="w-full rounded-2xl border border-[#4b0008]/20 px-5 py-3 font-black transition hover:bg-[#f5eee7]"
             >
               Return to Login
             </button>
